@@ -178,6 +178,7 @@ func (KeyInstaller) Install(key db.AccessKey, usage db.AccessKeyRole, logger tas
 			installation.SSHAgent = &agent
 			installation.Login = key.SshKey.Login
 		}
+
 	case db.AccessKeyRoleAnsiblePasswordVault:
 		switch key.Type {
 		case db.AccessKeyLoginPassword:
@@ -198,6 +199,9 @@ func (KeyInstaller) Install(key db.AccessKey, usage db.AccessKeyRole, logger tas
 			agent, err = StartSSHAgent(key, logger)
 			installation.SSHAgent = &agent
 			installation.Login = key.SshKey.Login
+		case db.ExternalSshAgent:
+			installation, err = installSSHCertExternal(key.SSHExternalAgent, logger)
+
 		case db.AccessKeyLoginPassword:
 			installation.Login = key.LoginPassword.Login
 			installation.Password = key.LoginPassword.Password

@@ -53,6 +53,24 @@ func (d *LocalAccessKeyDeserializer) SerializeSecret(key *db.AccessKey) error {
 		if err != nil {
 			return err
 		}
+
+	case db.ExternalSshAgent:
+		var missing []string
+
+		if strings.TrimSpace(key.SSHExternalAgent.Command) == "" {
+			missing = append(missing, "command")
+		}
+
+		if strings.TrimSpace(key.SSHExternalAgent.Config) == "" {
+			missing = append(missing, "config")
+		}
+
+		if len(missing) > 0 {
+			return fmt.Errorf(
+				"invalid external ssh agent configuration - missing required field(s): %s",
+				strings.Join(missing, ", "),
+			)
+		}
 	case db.AccessKeyLoginPassword:
 		if key.LoginPassword.Password == "" {
 			if key.LoginPassword.Login != "" {

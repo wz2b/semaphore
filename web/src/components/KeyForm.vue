@@ -140,6 +140,45 @@
       v-if="!isReadOnly && item.type === 'ssh'"
     />
 
+    <v-text-field
+      v-model="item.ssh_external_agent.command"
+      label="Command"
+      :rules="[(v) => !canEditSecrets || !!v || 'Command is required']"
+      v-if="!isReadOnly && item.type === 'ssh_agent_external'"
+      :required="canEditSecrets"
+      :disabled="formSaving || !canEditSecrets"
+      outlined
+      dense
+    />
+
+    <v-combobox
+      v-model="item.ssh_external_agent.args"
+      label="Args"
+      hint="Optional list of command-line arguments"
+      persistent-hint
+      multiple
+      small-chips
+      deletable-chips
+      v-if="!isReadOnly && item.type === 'ssh_agent_external'"
+      :disabled="formSaving || !canEditSecrets"
+      outlined
+      dense
+    />
+
+    <v-textarea
+      v-model="item.ssh_external_agent.config"
+      label="Config (JSON)"
+      :rules="[
+        (v) => !canEditSecrets || !!v || 'Config is required',
+        (v) => !canEditSecrets || isValidJson(v) || 'Config must be valid JSON',
+      ]"
+      v-if="!isReadOnly && item.type === 'ssh_agent_external'"
+      :required="canEditSecrets"
+      :disabled="formSaving || !canEditSecrets"
+      outlined
+      rows="6"
+    />
+
     <v-checkbox
         v-model="item.override_secret"
         :label="$t('override')"
@@ -177,6 +216,10 @@ export default {
         {
           id: 'none',
           name: `${this.$t('keyFormNone')}`,
+        },
+        {
+          id: 'ssh_agent_external',
+          name: 'SSH External Agent',
         },
       ],
       secretStorages: null,
@@ -240,12 +283,42 @@ export default {
   methods: {
     afterLoadData() {
       this.isSynced = JSON.parse(this.item.plain || '{}').dvls_id != null;
+
+      this.item.ssh = this.item.ssh || {};
+      this.item.login_password = this.item.login_password || {};
+      this.item.ssh_external_agent = this.item.ssh_external_agent || {
+        command: '',
+        args: [],
+        config: '{}',
+      };
+
+      if (!Array.isArray(this.item.ssh_external_agent.args)) {
+        this.item.ssh_external_agent.args = [];
+      }
+
+      if (!this.item.ssh_external_agent.config) {
+        this.item.ssh_external_agent.config = '{}';
+      }
+    },
+
+    isValidJson(value) {
+      try {
+        JSON.parse(value);
+        return true;
+      } catch (e) {
+        return false;
+      }
     },
 
     getNewItem() {
       return {
         ssh: {},
         login_password: {},
+        ssh_external_agent: {
+          command: '',
+          args: [],
+          config: '{}',
+        },
       };
     },
 

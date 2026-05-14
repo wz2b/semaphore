@@ -380,6 +380,10 @@ func (t *LocalJob) getPlaybookArgs(username string, incomingVersion *string) (ar
 				args = append(args, "--ask-pass")
 				inputMap[db.AccessKeyRoleAnsibleUser] = t.sshKeyInstallation.Password
 			}
+
+		case db.ExternalSshAgent:
+			// External agent manages key material via SSH_AUTH_SOCK or similar.
+			// Username is expected to come from the inventory.
 		case db.AccessKeyNone:
 		default:
 			err = fmt.Errorf("access key does not suite for inventory's user credentials")

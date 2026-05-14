@@ -42,10 +42,11 @@ type AccessKey struct {
 	Plain       *string `db:"plain" json:"plain,omitempty"`
 	IgnorePlain bool
 
-	String         string        `db:"-" json:"string"`
-	LoginPassword  LoginPassword `db:"-" json:"login_password"`
-	SshKey         SshKey        `db:"-" json:"ssh"`
-	OverrideSecret bool          `db:"-" json:"override_secret,omitempty"`
+	String           string                 `db:"-" json:"string"`
+	LoginPassword    LoginPassword          `db:"-" json:"login_password"`
+	SshKey           SshKey                 `db:"-" json:"ssh"`
+	SSHExternalAgent SSHExternalAgentConfig `db:"-" json:"ssh_external_agent,omitempty"`
+	OverrideSecret   bool                   `db:"-" json:"override_secret,omitempty"`
 
 	StorageID *int `db:"storage_id" json:"-" backup:"-"`
 
@@ -110,6 +111,8 @@ func (key *AccessKey) IsEmpty() bool {
 		return key.SshKey.PrivateKey == ""
 	case AccessKeyLoginPassword:
 		return key.LoginPassword.Password == ""
+	case ExternalSshAgent:
+		return key.SSHExternalAgent.Config == "" || key.SSHExternalAgent.Command == ""
 	default:
 		return true
 	}
