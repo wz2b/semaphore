@@ -26,13 +26,31 @@ type Agent struct {
 	listener   net.Listener
 	SocketFile string
 	done       chan struct{}
+
+	// closeFunc is used when this Agent represents an externally managed SSH
+	// agent rather than an SSH agent started and served by this package.
+	//
+	// Normal/internal Agent lifecycle:
+	//   - this package creates the listener/socket
+	//   - this package starts the goroutine(s)
+	//   - Close closes done/listener to stop the internal agent
+	//
+	// External Agent lifecycle:
+	//   - another package/process creates and owns the socket/process
+	//   - this Agent only carries SocketFile so existing task code can use it
+	//   - Close delegates entirely to closeFunc
+	//
+	// Important: when closeFunc is set, Close does not also close done/listener.
+	// The external owner is responsible for shutting down its process and
+	// removing any socket/runtime directory it created.
+	closeFunc func() error
 }
 
 func NewAgent() Agent {
 	return Agent{}
 }
 
-func (a *Agent) Listen() error {
+func (a *Agent) listen() error {
 	keyring := agent.NewKeyring()
 
 	for _, k := range a.Keys {
@@ -99,13 +117,42 @@ func (a *Agent) Listen() error {
 	return nil
 }
 
+// Close shuts down this Agent.
+//
+// There are two supported lifecycle modes:
+//
+//  1. Internal agent:
+//     The ssh package created the listener/socket and owns the goroutine
+//     lifecycle. Close signals the goroutine via done and closes the listener.
+//
+//  2. External agent:
+//     Another package/process created the SSH agent socket. In that case,
+//     closeFunc is set and owns the entire shutdown path. Close delegates to
+//     closeFunc and intentionally skips the internal done/listener cleanup.
+//
+// Do not run both shutdown paths for the same Agent. An externally managed
+// agent may not have a listener/done owned by this package, and attempting
+// mixed cleanup can cause double-close bugs or cleanup of resources this
+// package does not own.
 func (a *Agent) Close() error {
+	if a.closeFunc != nil {
+		closeFunc := a.closeFunc
+		a.closeFunc = nil
+		return closeFunc()
+	}
+
+	// This is the default behavior if no external close function was provided.
 	if a.done != nil {
 		close(a.done)
+		a.done = nil
 	}
+
 	if a.listener != nil {
-		return a.listener.Close()
+		listener := a.listener
+		a.listener = nil
+		return listener.Close()
 	}
+
 	return nil
 }
 
@@ -132,7 +179,7 @@ func StartSSHAgent(key db.AccessKey, logger task_logger.Logger) (Agent, error) {
 		SocketFile: socketFile,
 	}
 
-	return sshAgent, sshAgent.Listen()
+	return sshAgent, sshAgent.listen()
 }
 
 type AccessKeyInstallation struct {
