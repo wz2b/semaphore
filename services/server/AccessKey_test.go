@@ -2,7 +2,10 @@ package server
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/semaphoreui/semaphore/db"
@@ -99,6 +102,272 @@ func TestSetGetSecretWithEncryption(t *testing.T) {
 
 	if accessKey.SshKey.PrivateKey != "qerphqeruqoweurqwerqqeuiqwpavqr" {
 		t.Error("invalid secret")
+	}
+}
+
+func TestExternalSSHAgentSecretRoundTrip_NoEncryption(t *testing.T) {
+	encryptionService := NewAccessKeyEncryptionService(nil, nil, nil, nil)
+
+	util.Config = &util.ConfigType{}
+
+	accessKey := db.AccessKey{
+		Name: "ext-agent-key",
+		Type: db.ExternalSshAgent,
+		SSHExternalAgent: db.SSHExternalAgentConfig{
+			Command: "/usr/local/bin/ssh-vend-local",
+			Args:    []string{"semaphore-agent", "--principal", "ansadmin"},
+			Config:  `{}`,
+		},
+	}
+
+	err := encryptionService.SerializeSecret(&accessKey)
+	if err != nil {
+		t.Fatalf("SerializeSecret returned error: %v", err)
+	}
+
+	if accessKey.Secret == nil || *accessKey.Secret == "" {
+		t.Fatal("expected non-empty serialized secret")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(*accessKey.Secret)
+	if err != nil {
+		t.Fatalf("decode serialized secret: %v", err)
+	}
+
+	var gotCfg db.SSHExternalAgentConfig
+	if err = json.Unmarshal(decoded, &gotCfg); err != nil {
+		t.Fatalf("unmarshal serialized secret payload: %v", err)
+	}
+
+	if gotCfg.Command != accessKey.SSHExternalAgent.Command {
+		t.Fatalf("command mismatch: got %q, want %q", gotCfg.Command, accessKey.SSHExternalAgent.Command)
+	}
+
+	if !reflect.DeepEqual(gotCfg.Args, accessKey.SSHExternalAgent.Args) {
+		t.Fatalf("args mismatch: got %#v, want %#v", gotCfg.Args, accessKey.SSHExternalAgent.Args)
+	}
+
+	if gotCfg.Config != accessKey.SSHExternalAgent.Config {
+		t.Fatalf("config mismatch: got %q, want %q", gotCfg.Config, accessKey.SSHExternalAgent.Config)
+	}
+
+	readBack := db.AccessKey{
+		Type:   db.ExternalSshAgent,
+		Secret: accessKey.Secret,
+	}
+
+	err = encryptionService.DeserializeSecret(&readBack)
+	if err != nil {
+		t.Fatalf("DeserializeSecret returned error: %v", err)
+	}
+
+	if readBack.SSHExternalAgent.Command != accessKey.SSHExternalAgent.Command {
+		t.Fatalf("round-trip command mismatch: got %q, want %q", readBack.SSHExternalAgent.Command, accessKey.SSHExternalAgent.Command)
+	}
+
+	if !reflect.DeepEqual(readBack.SSHExternalAgent.Args, accessKey.SSHExternalAgent.Args) {
+		t.Fatalf("round-trip args mismatch: got %#v, want %#v", readBack.SSHExternalAgent.Args, accessKey.SSHExternalAgent.Args)
+	}
+
+	if readBack.SSHExternalAgent.Config != accessKey.SSHExternalAgent.Config {
+		t.Fatalf("round-trip config mismatch: got %q, want %q", readBack.SSHExternalAgent.Config, accessKey.SSHExternalAgent.Config)
+	}
+}
+
+func TestExternalSSHAgentSecretRoundTrip_WithEncryption(t *testing.T) {
+	encryptionService := NewAccessKeyEncryptionService(nil, nil, nil, nil)
+
+	util.Config = &util.ConfigType{
+		AccessKeyEncryption: "hHYgPrhQTZYm7UFTvcdNfKJMB3wtAXtJENUButH+DmM=",
+	}
+
+	accessKey := db.AccessKey{
+		Name: "ext-agent-key",
+		Type: db.ExternalSshAgent,
+		SSHExternalAgent: db.SSHExternalAgentConfig{
+			Command: "/usr/local/bin/ssh-vend-local",
+			Args:    []string{"semaphore-agent", "--principal", "ansadmin"},
+			Config:  `{}`,
+		},
+	}
+
+	err := encryptionService.SerializeSecret(&accessKey)
+	if err != nil {
+		t.Fatalf("SerializeSecret returned error: %v", err)
+	}
+
+	if accessKey.Secret == nil || *accessKey.Secret == "" {
+		t.Fatal("expected non-empty encrypted secret")
+	}
+
+	readBack := db.AccessKey{
+		Type:   db.ExternalSshAgent,
+		Secret: accessKey.Secret,
+	}
+
+	err = encryptionService.DeserializeSecret(&readBack)
+	if err != nil {
+		t.Fatalf("DeserializeSecret returned error: %v", err)
+	}
+
+	if readBack.SSHExternalAgent.Command != accessKey.SSHExternalAgent.Command {
+		t.Fatalf("round-trip command mismatch: got %q, want %q", readBack.SSHExternalAgent.Command, accessKey.SSHExternalAgent.Command)
+	}
+
+	if !reflect.DeepEqual(readBack.SSHExternalAgent.Args, accessKey.SSHExternalAgent.Args) {
+		t.Fatalf("round-trip args mismatch: got %#v, want %#v", readBack.SSHExternalAgent.Args, accessKey.SSHExternalAgent.Args)
+	}
+
+	if readBack.SSHExternalAgent.Config != accessKey.SSHExternalAgent.Config {
+		t.Fatalf("round-trip config mismatch: got %q, want %q", readBack.SSHExternalAgent.Config, accessKey.SSHExternalAgent.Config)
+	}
+}
+
+func TestExternalSSHAgentValidationMissingCommand(t *testing.T) {
+	util.Config = &util.ConfigType{}
+	encryptionService := NewAccessKeyEncryptionService(nil, nil, nil, nil)
+
+	accessKey := db.AccessKey{
+		Name: "ext-agent-key",
+		Type: db.ExternalSshAgent,
+		SSHExternalAgent: db.SSHExternalAgentConfig{
+			Config: `{}`,
+		},
+	}
+
+	err := encryptionService.SerializeSecret(&accessKey)
+	if err == nil {
+		t.Fatal("expected missing command validation error")
+	}
+
+	if !strings.Contains(err.Error(), "command") {
+		t.Fatalf("expected error to mention command, got: %v", err)
+	}
+}
+
+func TestExternalSSHAgentValidationMissingConfig(t *testing.T) {
+	util.Config = &util.ConfigType{}
+	encryptionService := NewAccessKeyEncryptionService(nil, nil, nil, nil)
+
+	accessKey := db.AccessKey{
+		Name: "ext-agent-key",
+		Type: db.ExternalSshAgent,
+		SSHExternalAgent: db.SSHExternalAgentConfig{
+			Command: "/usr/local/bin/ssh-vend-local",
+		},
+	}
+
+	err := encryptionService.SerializeSecret(&accessKey)
+	if err == nil {
+		t.Fatal("expected missing config validation error")
+	}
+
+	if !strings.Contains(err.Error(), "config") {
+		t.Fatalf("expected error to mention config, got: %v", err)
+	}
+}
+
+func TestExternalSSHAgentArgsString_NormalizedToSlice(t *testing.T) {
+	util.Config = &util.ConfigType{}
+	encryptionService := NewAccessKeyEncryptionService(nil, nil, nil, nil)
+
+	var accessKey db.AccessKey
+	err := json.Unmarshal([]byte(`{
+		"name": "ext-agent-key",
+		"type": "ssh_agent_external",
+		"ssh_external_agent": {
+			"command": "/usr/local/bin/ssh-vend-local",
+			"args": "semaphore-agent -principal chrisp",
+			"config": "{}"
+		}
+	}`), &accessKey)
+	if err != nil {
+		t.Fatalf("json unmarshal failed: %v", err)
+	}
+
+	expected := []string{"semaphore-agent", "-principal", "chrisp"}
+	if !reflect.DeepEqual(accessKey.SSHExternalAgent.Args, expected) {
+		t.Fatalf("normalized args mismatch: got %#v, want %#v", accessKey.SSHExternalAgent.Args, expected)
+	}
+
+	err = encryptionService.SerializeSecret(&accessKey)
+	if err != nil {
+		t.Fatalf("SerializeSecret returned error: %v", err)
+	}
+
+	readBack := db.AccessKey{Type: db.ExternalSshAgent, Secret: accessKey.Secret}
+	err = encryptionService.DeserializeSecret(&readBack)
+	if err != nil {
+		t.Fatalf("DeserializeSecret returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(readBack.SSHExternalAgent.Args, expected) {
+		t.Fatalf("round-trip args mismatch: got %#v, want %#v", readBack.SSHExternalAgent.Args, expected)
+	}
+}
+
+func TestExternalSSHAgentArgsString_QuotedArguments(t *testing.T) {
+	util.Config = &util.ConfigType{}
+
+	var accessKey db.AccessKey
+	err := json.Unmarshal([]byte(`{
+		"name": "ext-agent-key",
+		"type": "ssh_agent_external",
+		"ssh_external_agent": {
+			"command": "/usr/local/bin/ssh-vend-local",
+			"args": "--label \"hello world\"",
+			"config": "{}"
+		}
+	}`), &accessKey)
+	if err != nil {
+		t.Fatalf("json unmarshal failed: %v", err)
+	}
+
+	expected := []string{"--label", "hello world"}
+	if !reflect.DeepEqual(accessKey.SSHExternalAgent.Args, expected) {
+		t.Fatalf("quoted args mismatch: got %#v, want %#v", accessKey.SSHExternalAgent.Args, expected)
+	}
+}
+
+func TestExternalSSHAgentArgsString_EmptyBecomesEmptySlice(t *testing.T) {
+	util.Config = &util.ConfigType{}
+	encryptionService := NewAccessKeyEncryptionService(nil, nil, nil, nil)
+
+	var accessKey db.AccessKey
+	err := json.Unmarshal([]byte(`{
+		"name": "ext-agent-key",
+		"type": "ssh_agent_external",
+		"ssh_external_agent": {
+			"command": "/usr/local/bin/ssh-vend-local",
+			"args": "",
+			"config": "{}"
+		}
+	}`), &accessKey)
+	if err != nil {
+		t.Fatalf("json unmarshal failed: %v", err)
+	}
+
+	if accessKey.SSHExternalAgent.Args == nil {
+		t.Fatal("expected empty slice, got nil")
+	}
+
+	if len(accessKey.SSHExternalAgent.Args) != 0 {
+		t.Fatalf("expected empty args slice, got %#v", accessKey.SSHExternalAgent.Args)
+	}
+
+	err = encryptionService.SerializeSecret(&accessKey)
+	if err != nil {
+		t.Fatalf("SerializeSecret returned error for empty args: %v", err)
+	}
+
+	readBack := db.AccessKey{Type: db.ExternalSshAgent, Secret: accessKey.Secret}
+	err = encryptionService.DeserializeSecret(&readBack)
+	if err != nil {
+		t.Fatalf("DeserializeSecret returned error for empty args: %v", err)
+	}
+
+	if len(readBack.SSHExternalAgent.Args) != 0 {
+		t.Fatalf("expected empty args slice after round-trip, got %#v", readBack.SSHExternalAgent.Args)
 	}
 }
 

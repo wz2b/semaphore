@@ -71,6 +71,13 @@ func (d *LocalAccessKeyDeserializer) SerializeSecret(key *db.AccessKey) error {
 				strings.Join(missing, ", "),
 			)
 		}
+
+		// Provider-specific config remains opaque. We only persist the full
+		// SSHExternalAgentConfig payload without interpreting config internals.
+		plaintext, err = json.Marshal(key.SSHExternalAgent)
+		if err != nil {
+			return err
+		}
 	case db.AccessKeyLoginPassword:
 		if key.LoginPassword.Password == "" {
 			if key.LoginPassword.Login != "" {

@@ -151,14 +151,11 @@
       dense
     />
 
-    <v-combobox
-      v-model="item.ssh_external_agent.args"
+    <v-text-field
+      v-model="externalAgentArgsText"
       label="Args"
-      hint="Optional list of command-line arguments"
+      hint="Optional command-line arguments"
       persistent-hint
-      multiple
-      small-chips
-      deletable-chips
       v-if="!isReadOnly && item.type === 'ssh_agent_external'"
       :disabled="formSaving || !canEditSecrets"
       outlined
@@ -204,6 +201,7 @@ export default {
     return {
       showLoginPassword: false,
       showSSHPassphrase: false,
+      externalAgentArgsText: '',
       inventoryTypes: [
         {
           id: 'ssh',
@@ -287,13 +285,19 @@ export default {
       this.item.ssh = this.item.ssh || {};
       this.item.login_password = this.item.login_password || {};
       this.item.ssh_external_agent = this.item.ssh_external_agent || {
-        command: '',
-        args: [],
+        command: '/usr/local/bin/ssh-vend-local',
+        args: ['semaphore-agent', '-principal', 'ansadmin'],
         config: '{}',
       };
 
       if (!Array.isArray(this.item.ssh_external_agent.args)) {
-        this.item.ssh_external_agent.args = [];
+        this.item.ssh_external_agent.args = ['semaphore-agent', '-principal', 'ansadmin'];
+      }
+
+      this.externalAgentArgsText = this.formatExternalAgentArgs(this.item.ssh_external_agent.args);
+
+      if (!this.item.ssh_external_agent.command) {
+        this.item.ssh_external_agent.command = '/usr/local/bin/ssh-vend-local';
       }
 
       if (!this.item.ssh_external_agent.config) {
@@ -310,13 +314,95 @@ export default {
       }
     },
 
+    beforeSave() {
+      this.item.ssh_external_agent.args = this.parseExternalAgentArgs(this.externalAgentArgsText);
+    },
+
+    formatExternalAgentArgs(args) {
+      if (!Array.isArray(args) || args.length === 0) {
+        return '';
+      }
+
+      return args.map((arg) => {
+        if (arg == null) {
+          return '';
+        }
+
+        const strArg = String(arg);
+        if (!/[\s"']/.test(strArg)) {
+          return strArg;
+        }
+
+        return `"${strArg.replace(/(["\\])/g, '\\$1')}"`;
+      }).join(' ');
+    },
+
+    parseExternalAgentArgs(raw) {
+      const input = (raw || '').trim();
+      if (input === '') {
+        return [];
+      }
+
+      const args = [];
+      let current = '';
+      let inSingleQuote = false;
+      let inDoubleQuote = false;
+      let escaped = false;
+
+      const flush = () => {
+        if (current.length > 0) {
+          args.push(current);
+          current = '';
+        }
+      };
+
+      for (let i = 0; i < input.length; i += 1) {
+        const ch = input[i];
+
+        if (escaped) {
+          current += ch;
+          escaped = false;
+        } else if (inSingleQuote) {
+          if (ch === '\'') {
+            inSingleQuote = false;
+          } else {
+            current += ch;
+          }
+        } else if (inDoubleQuote) {
+          if (ch === '\\') {
+            escaped = true;
+          } else if (ch === '"') {
+            inDoubleQuote = false;
+          } else {
+            current += ch;
+          }
+        } else if (/\s/.test(ch)) {
+          flush();
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '\'') {
+          inSingleQuote = true;
+        } else if (ch === '"') {
+          inDoubleQuote = true;
+        } else {
+          current += ch;
+        }
+      }
+
+      if (current.length > 0) {
+        args.push(current);
+      }
+
+      return args;
+    },
+
     getNewItem() {
       return {
         ssh: {},
         login_password: {},
         ssh_external_agent: {
-          command: '',
-          args: [],
+          command: '/usr/local/bin/ssh-vend-local',
+          args: ['semaphore-agent', '--principal', 'ansadmin'],
           config: '{}',
         },
       };

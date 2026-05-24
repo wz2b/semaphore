@@ -53,6 +53,12 @@ func unmarshalAppropriateField(key *db.AccessKey, secret []byte) (err error) {
 		if err == nil {
 			key.LoginPassword = loginPass
 		}
+	case db.ExternalSshAgent:
+		externalAgentCfg := db.SSHExternalAgentConfig{}
+		err = json.Unmarshal(secret, &externalAgentCfg)
+		if err == nil {
+			key.SSHExternalAgent = externalAgentCfg
+		}
 	}
 	return
 }

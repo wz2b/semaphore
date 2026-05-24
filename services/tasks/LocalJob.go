@@ -753,8 +753,36 @@ func (t *LocalJob) Run(username string, incomingVersion *string, alias string) (
 		environmentVariables = append(environmentVariables, t.getShellEnvironmentExtraENV(username, incomingVersion)...)
 	}
 
-	if t.Inventory.SSHKey.Type == db.AccessKeySSH && t.Inventory.SSHKeyID != nil {
-		environmentVariables = append(environmentVariables, fmt.Sprintf("SSH_AUTH_SOCK=%s", t.sshKeyInstallation.SSHAgent.SocketFile))
+	// Inject SSH_AUTH_SOCK for any Ansible user credential installation that
+	// produced an SSH agent socket.
+	//
+	// Do not gate this only on db.AccessKeySSH. The built-in Semaphore SSH key
+	// path and the external SSH certificate agent path both expose their runtime
+	// credential through t.sshKeyInstallation.SSHAgent.SocketFile.
+	//
+	// The access key's database type describes how the credential was installed;
+	// it does not describe what Ansible needs at execution time. Ansible only
+	// needs SSH_AUTH_SOCK to point at an ssh-agent-compatible socket.
+	//
+	// This supports:
+	//   - db.AccessKeySSH: Semaphore starts its built-in ssh-agent
+	//   - db.ExternalSshAgent: an external process owns the agent socket
+	//
+	// Do not "simplify" this back to checking db.AccessKeySSH.
+	// External SSH agents are not db.AccessKeySSH, but they intentionally produce
+	// the same runtime contract: an ssh-agent-compatible socket file.
+	//
+	// If this is narrowed back to db.AccessKeySSH, external SSH certificate
+	// authentication will start successfully, report a socket path, and then
+	// Ansible/OpenSSH will silently ignore it and fall back to local ~/.ssh keys.
+	if t.Inventory.SSHKeyID != nil &&
+		t.sshKeyInstallation.SSHAgent != nil &&
+		t.sshKeyInstallation.SSHAgent.SocketFile != "" {
+
+		environmentVariables = append(
+			environmentVariables,
+			fmt.Sprintf("SSH_AUTH_SOCK=%s", t.sshKeyInstallation.SSHAgent.SocketFile),
+		)
 	}
 
 	if t.Template.Type != db.TemplateTask {
