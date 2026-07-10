@@ -685,7 +685,6 @@ func oidcRedirect(w http.ResponseWriter, r *http.Request) {
 
 	s := r.FormValue("state")
 	b, err := base64.URLEncoding.DecodeString(s)
-
 	if err != nil {
 		log.Error(err.Error())
 		http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
@@ -694,7 +693,6 @@ func oidcRedirect(w http.ResponseWriter, r *http.Request) {
 
 	var stateData oAuthState
 	err = json.Unmarshal(b, &stateData)
-
 	if err != nil {
 		log.Error(err.Error())
 		http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
@@ -722,7 +720,9 @@ func oidcRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verifier := _oidc.Verifier(&oidc.Config{ClientID: oauth.ClientID})
+	verifier := _oidc.Verifier(&oidc.Config{
+		ClientID: oauth.ClientID,
+	})
 
 	code := r.URL.Query().Get("code")
 
@@ -733,45 +733,102 @@ func oidcRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TEMP DEBUG ONLY
+	dumpRawTokenToStderr(pid, oauth2Token)
+
 	var claims claimResult
 
-	// Extract the ID Token from OAuth2 token.
-	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
-
-	if ok && rawIDToken != "" {
-		var idToken *oidc.IDToken
-		// Parse and verify ID Token payload.
-		idToken, err = verifier.Verify(ctx, rawIDToken)
-
-		if err == nil {
-			claims, err = claimOidcToken(idToken, provider)
-		}
-	} else {
-		var userInfo *oidc.UserInfo
-		userInfo, err = _oidc.UserInfo(ctx, oauth2.StaticTokenSource(oauth2Token))
-
-		if err == nil {
-			if userInfo.Email == "" {
-				claims, err = claimOidcUserInfo(userInfo, provider)
-			} else {
-				claims.email = userInfo.Email
-				claims.name = userInfo.Profile
-			}
+	/*
+		Start with claims from the ID token, when one is present.
+		UserInfo claims retrieved below will take precedence.
+	*/
+	rawIDToken, hasIDToken := oauth2Token.Extra("id_token").(string)
+	if hasIDToken && rawIDToken != "" {
+		idToken, verifyErr := verifier.Verify(ctx, rawIDToken)
+		if verifyErr != nil {
+			log.Error(verifyErr.Error())
+			http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
+			return
 		}
 
-		claims.username = getRandomUsername()
-		if userInfo.Profile == "" {
-			claims.name = getRandomProfileName()
+		claims, err = claimOidcToken(idToken, provider)
+		if err != nil {
+			log.Error(err.Error())
+			http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
+			return
 		}
 	}
 
+	/*
+		Always retrieve UserInfo, regardless of whether an ID token was
+		returned. Non-empty UserInfo fields override ID-token fields.
+	*/
+	userInfo, err := _oidc.UserInfo(
+		ctx,
+		oauth2.StaticTokenSource(oauth2Token),
+	)
+	if err != nil {
+		log.Error(err.Error())
+		http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
+		return
+	}
+	//////////// TEMP DEBUG ONLY: dump raw UserInfo response claims.
+	var rawUserInfoClaims map[string]interface{}
+
+	if err := userInfo.Claims(&rawUserInfoClaims); err != nil {
+		fmt.Fprintf(os.Stderr, "\n[%s] Failed to decode UserInfo claims: %v\n", pid, err)
+	} else {
+		b, err := json.MarshalIndent(rawUserInfoClaims, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\n[%s] Failed to marshal UserInfo claims: %v\n", pid, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "\n[%s] UserInfo claims:\n%s\n", pid, string(b))
+		}
+	}
+	//////////
+
+	userInfoClaims, err := claimOidcUserInfo(userInfo, provider)
 	if err != nil {
 		log.Error(err.Error())
 		http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
 		return
 	}
 
-	user, err := helpers.Store(r).GetUserByLoginOrEmail("", claims.email) // ignore username because it creates a lot of problems
+	// UserInfo takes precedence when it supplies a value.
+	if userInfoClaims.email != "" {
+		claims.email = userInfoClaims.email
+	}
+	if userInfoClaims.name != "" {
+		claims.name = userInfoClaims.name
+	}
+	if userInfoClaims.username != "" {
+		claims.username = userInfoClaims.username
+	}
+
+	/*
+		The oidc.UserInfo type exposes these standard fields directly.
+		Use them as an additional fallback/override in case
+		claimOidcUserInfo does not populate them.
+	*/
+	if userInfo.Email != "" {
+		claims.email = userInfo.Email
+	}
+	if userInfo.Profile != "" {
+		claims.name = userInfo.Profile
+	}
+
+	if claims.username == "" {
+		claims.username = getRandomUsername()
+	}
+	if claims.name == "" {
+		claims.name = getRandomProfileName()
+	}
+
+	user, err := helpers.Store(r).GetUserByLoginOrEmail(
+		"",
+		claims.email,
+	) // Ignore username because it creates a lot of problems.
+
 	if err != nil {
 		user = db.User{
 			Username: claims.username,
@@ -779,6 +836,7 @@ func oidcRedirect(w http.ResponseWriter, r *http.Request) {
 			Email:    claims.email,
 			External: true,
 		}
+
 		user, err = helpers.Store(r).CreateUserWithoutPassword(user)
 		if err != nil {
 			log.Error(err.Error())
@@ -788,22 +846,18 @@ func oidcRedirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !user.External {
-		log.Error(fmt.Errorf("OIDC user '%s' conflicts with local user", user.Username))
+		log.Error(fmt.Errorf(
+			"OIDC user '%s' conflicts with local user",
+			user.Username,
+		))
 		http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
 		return
 	}
 
 	createSession(w, r, user, true)
 
-	config, ok := util.Config.OidcProviders[pid]
-	if !ok {
-		log.Error(fmt.Errorf("no such provider: %s", pid))
-		http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
-		return
-	}
-
 	redirectPath := ""
-	if config.ReturnViaState {
+	if provider.ReturnViaState {
 		redirectPath = stateData.Return
 	} else {
 		redirectPath = mux.Vars(r)["redirect_path"]
@@ -825,4 +879,54 @@ func oidcRedirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
+}
+
+func dumpRawTokenToStderr(pid string, oauth2Token *oauth2.Token) {
+	rawIDToken, _ := oauth2Token.Extra("id_token").(string)
+
+	fmt.Fprintf(os.Stderr, "\nOIDC TOKEN DEBUG\n")
+	fmt.Fprintf(os.Stderr, "================\n\n")
+
+	fmt.Fprintf(os.Stderr, "Provider:\n%s\n\n", pid)
+	fmt.Fprintf(os.Stderr, "Token Type:\n%s\n\n", oauth2Token.TokenType)
+	fmt.Fprintf(os.Stderr, "Expiry:\n%s\n\n", oauth2Token.Expiry)
+
+	if oauth2Token.AccessToken != "" {
+		fmt.Fprintf(os.Stderr, "Access Token:\n%s\n\n", "present")
+	} else {
+		fmt.Fprintf(os.Stderr, "Access Token:\n%s\n", "missing")
+	}
+	//fmt.Fprintf(os.Stderr, "Access Token:\n%s\n\n", oauth2Token.AccessToken)
+	//fmt.Fprintf(os.Stderr, "Refresh Token:\n%s\n\n", oauth2Token.RefreshToken)
+
+	if oauth2Token.RefreshToken != "" {
+		fmt.Fprintf(os.Stderr, "Refresh Token:\n%s\n\n", "present")
+	} else {
+		fmt.Fprintf(os.Stderr, "Refresh Token:\n%s\n", "missing")
+	}
+
+	fmt.Fprintf(os.Stderr, "Raw ID Token:\n%s\n\n", rawIDToken)
+	fmt.Fprintf(os.Stderr, "ID Token Present:\n%t\n\n", rawIDToken != "")
+
+	fmt.Fprintf(os.Stderr, "================\n")
+	fmt.Fprintf(os.Stderr, "END OIDC TOKEN DEBUG\n\n")
+}
+
+func decodeJWTSegment(token string, segment int) string {
+	parts := strings.Split(token, ".")
+	if len(parts) <= segment {
+		return "missing JWT segment"
+	}
+
+	decoded, err := base64.RawURLEncoding.DecodeString(parts[segment])
+	if err != nil {
+		return fmt.Sprintf("decode error: %v", err)
+	}
+
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, decoded, "", "  "); err != nil {
+		return string(decoded)
+	}
+
+	return pretty.String()
 }
